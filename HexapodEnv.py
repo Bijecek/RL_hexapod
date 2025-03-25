@@ -7,7 +7,7 @@ from pyrep.objects.object import Object
 
 
 class HexapodEnv():#gym.Env):
-    def __init__(self):
+    def __init__(self, port=19997):
         #super(HexapodEnv, self).__init__()
 
         # Initialize PyRep & load the scene

@@ -1,3 +1,5 @@
+import multiprocessing
+
 import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, Model
@@ -26,31 +28,60 @@ from HexapodEnv import HexapodEnv
 import gymnasium as gym
 
 def main():
+    num_processes = 4  # Number of parallel simulations
+    processes = []
+
+    for i in range(num_processes):
+        p = multiprocessing.Process(target=run_simulation, args=(i,))
+        processes.append(p)
+        p.start()
+
+    for p in processes:
+        p.join()
+    # env = HexapodEnv()
+    #
+    # # TODO: UNCOMMENT
+    # # env = gym.make("Pendulum-v1", render_mode="human")
+    # # num_states = env.observation_space.shape[0]
+    # # num_actions = env.action_space.shape[0]
+    # # upper_bound = env.action_space.high[0]
+    # # lower_bound = env.action_space.low[0]
+    # # print("num_states:", num_states)
+    # # print("num_actions:", num_actions)
+    # # print("Max Value of Action ->  {}".format(upper_bound))
+    # # print("Min Value of Action ->  {}".format(lower_bound))
+    #
+    # ddpg = DDPG(env.observation_space.shape, env.action_space.shape, env.action_space.high[0], env.action_space.low[0], 0.001 ,0.001, gamma=.99, tau=0.001)
+    # memory = Memory(500000, env.observation_space.shape[0], env.action_space.shape[0])
+    # #std_dev = 0.1
+    # std_dev = 0.1
+    # #noise = Noise(mean=np.zeros(env.action_space.shape), std_deviation=float(std_dev) * np.ones(env.action_space.shape), theta=0.15, dt=0.001)
+    # noise = Noise(mean=np.zeros(env.action_space.shape), std_deviation=float(std_dev) * np.ones(env.action_space.shape),
+    #               theta=0.15, dt=0.05)
+    #
+    #
+    # agent = Agent(env, ddpg, memory, noise)
+    # agent.run_episodes(2000)
+    # agent.save_results()
+
+
+def run_simulation(process_id):
+    print(f"Process {process_id} starting...")
     env = HexapodEnv()
 
-    # TODO: UNCOMMENT
-    # env = gym.make("Pendulum-v1", render_mode="human")
-    # num_states = env.observation_space.shape[0]
-    # num_actions = env.action_space.shape[0]
-    # upper_bound = env.action_space.high[0]
-    # lower_bound = env.action_space.low[0]
-    # print("num_states:", num_states)
-    # print("num_actions:", num_actions)
-    # print("Max Value of Action ->  {}".format(upper_bound))
-    # print("Min Value of Action ->  {}".format(lower_bound))
-
-    ddpg = DDPG(env.observation_space.shape, env.action_space.shape, env.action_space.high[0], env.action_space.low[0], 0.001 ,0.001, gamma=.99, tau=0.001)
+    # Initialize DDPG and components with unique names if needed
+    ddpg = DDPG(env.observation_space.shape, env.action_space.shape,
+                env.action_space.high[0], env.action_space.low[0],
+                0.001, 0.001, gamma=.99, tau=0.001)
     memory = Memory(500000, env.observation_space.shape[0], env.action_space.shape[0])
-    #std_dev = 0.1
     std_dev = 0.1
-    #noise = Noise(mean=np.zeros(env.action_space.shape), std_deviation=float(std_dev) * np.ones(env.action_space.shape), theta=0.15, dt=0.001)
-    noise = Noise(mean=np.zeros(env.action_space.shape), std_deviation=float(std_dev) * np.ones(env.action_space.shape),
+    noise = Noise(mean=np.zeros(env.action_space.shape),
+                  std_deviation=float(std_dev) * np.ones(env.action_space.shape),
                   theta=0.15, dt=0.05)
 
-
     agent = Agent(env, ddpg, memory, noise)
-    agent.run_episodes(2000)
-    agent.save_results()
+    agent.run_episodes(1000)
+
 
 if __name__ == '__main__':
     #print("Hi")
