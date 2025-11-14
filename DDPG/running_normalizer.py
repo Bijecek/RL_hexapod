@@ -17,7 +17,7 @@ class RunningNormalizer:
 
         delta = batch_mean - self.mean
         total_count = self.count + batch_count
-        new_mean = self.mean + delta * batch_count / total_count
+        new_mean = self.mean + (delta * batch_count / total_count)
 
         previous = self.var * self.count
         current = batch_var * batch_count

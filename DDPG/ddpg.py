@@ -103,11 +103,11 @@ class DDPG:
     """ Helper method containing training logic """
     @tf.function(
         input_signature=[
-            tf.TensorSpec(shape=(1028, 135), dtype=tf.float32),
-            tf.TensorSpec(shape=(1028, 18), dtype=tf.float32),
-            tf.TensorSpec(shape=(1028, 1), dtype=tf.float32),
-            tf.TensorSpec(shape=(1028, 135), dtype=tf.float32),
-            tf.TensorSpec(shape=(1028, 1), dtype=tf.float32)
+            tf.TensorSpec(shape=(4096, 135), dtype=tf.float32),
+            tf.TensorSpec(shape=(4096, 18), dtype=tf.float32),
+            tf.TensorSpec(shape=(4096, 1), dtype=tf.float32),
+            tf.TensorSpec(shape=(4096, 135), dtype=tf.float32),
+            tf.TensorSpec(shape=(4096, 1), dtype=tf.bool)
         ],
         jit_compile=True,
         reduce_retracing=True
@@ -119,7 +119,7 @@ class DDPG:
             target_critic_value = self.target_critic([next_state_batch, target_actions], training=False)
 
             """ Added done_batch flag to differentiate between state that has no further state"""
-            y = reward_batch + (1.0 - done_batch) * self.gamma * target_critic_value
+            y = reward_batch + (1.0 - tf.cast(done_batch, dtype=tf.float32)) * self.gamma * tf.stop_gradient(target_critic_value)
 
             critic_value = self.critic([state_batch, action_batch], training=True)
             critic_loss = tf.reduce_mean(tf.square(y - critic_value))
@@ -133,7 +133,7 @@ class DDPG:
         """ Actor training logic """
         with tf.GradientTape() as tape:
             actions = self.actor(state_batch, training=True)
-            critic_value_for_actor = self.critic([state_batch, actions], training=True)
+            critic_value_for_actor = self.critic([state_batch, actions], training=False)
             actor_loss = -tf.reduce_mean(critic_value_for_actor)
             scaled_actor_loss = self.actor_optimizer.get_scaled_loss(actor_loss)
 
@@ -141,7 +141,15 @@ class DDPG:
         actor_grad = self.actor_optimizer.get_unscaled_gradients(scaled_actor_grad)
         self.actor_optimizer.apply_gradients(zip(actor_grad, self.actor.trainable_variables))
 
-        return critic_loss, actor_loss, tf.reduce_mean(critic_value_for_actor)
+
+        """ Soft update logic with target networks"""
+        for target_param, param in zip(self.target_critic.variables, self.critic.variables):
+            target_param.assign(self.tau * param + (1 - self.tau) * target_param)
+        for target_param, param in zip(self.target_actor.variables, self.actor.variables):
+            target_param.assign(self.tau * param + (1 - self.tau) * target_param)
+
+        #return critic_loss, actor_loss, tf.reduce_mean(critic_value_for_actor)
+        return None, None, None
 
     """ Method responsible for updating networks and logging """
     def train(self, episode, state_batch, action_batch, reward_batch, next_state_batch, done_batch):
@@ -149,12 +157,12 @@ class DDPG:
             state_batch, action_batch, reward_batch, next_state_batch, done_batch
         )
 
-        self.critic_loss = float(critic_loss)
-        self.actor_loss = float(actor_loss)
-        self.avg_q_value = float(avg_q_value)
-
-        """ Tensorboard logging"""
-        with self.summary_writer.as_default():
-            tf.summary.scalar('Actor Loss', self.actor_loss, step=episode)
-            tf.summary.scalar('Critic Loss', self.critic_loss, step=episode)
-            tf.summary.scalar('Q-Value', self.avg_q_value, step=episode)
+        # self.critic_loss = float(critic_loss)
+        # self.actor_loss = float(actor_loss)
+        # self.avg_q_value = float(avg_q_value)
+        #
+        # """ Tensorboard logging"""
+        # with self.summary_writer.as_default():
+        #     tf.summary.scalar('Actor Loss', self.actor_loss, step=episode)
+        #     tf.summary.scalar('Critic Loss', self.critic_loss, step=episode)
+        #     tf.summary.scalar('Q-Value', self.avg_q_value, step=episode)

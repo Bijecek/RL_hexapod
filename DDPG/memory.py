@@ -1,17 +1,18 @@
 import numpy as np
+import tensorflow as tf
 
 """ Circular buffer memory implementation """
 class Memory:
-    def __init__(self, max_capacity, number_of_states, number_of_actions):
+    def __init__(self, max_capacity, number_of_states, number_of_actions, batch_size):
         self.max_capacity = max_capacity
         self.current_capacity = 0
-        self.batch_size = 1028
+        self.batch_size = batch_size
 
         self.state_memory = np.zeros((self.max_capacity, number_of_states), dtype=np.float32)
         self.action_memory = np.zeros((self.max_capacity, number_of_actions), dtype=np.float32)
         self.reward_memory = np.zeros((self.max_capacity,1), dtype=np.float32)
         self.next_state_memory = np.zeros((self.max_capacity, number_of_states), dtype=np.float32)
-        self.done_memory = np.zeros((self.max_capacity, 1), dtype=np.int32)
+        self.done_memory = np.zeros((self.max_capacity, 1), dtype=np.bool_)
 
     """ Insert a sample into memory """
     def insert_to_memory(self, observation):
