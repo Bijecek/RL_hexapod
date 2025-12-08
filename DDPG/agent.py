@@ -1,6 +1,9 @@
+import copy
+import io
 import os
 import pickle
-from collections import deque
+from collections import deque, defaultdict
+from contextlib import redirect_stdout
 from datetime import datetime
 import random
 
@@ -15,16 +18,12 @@ import cv2
 
 """ Class containing main simulation logic """
 class Agent:
-    def __init__(self, env, ddpg: DDPG, memory : Memory, noise: Noise, load_weights=False):
+    def __init__(self, env, ddpg: DDPG, memory : Memory, noise: Noise, load_weights=False, directory_name=None):
         self.env = env
         self.ddpg = ddpg
         self.memory = memory
         self.noise = noise
         #self.avg_episodes_rewards = []
-
-        self.video_dir = 'recorded_episodes'
-        self.all_recordings = []
-        self.manage_directory()
 
         if load_weights:
             self.load_weights()
@@ -33,12 +32,56 @@ class Agent:
         self.best_actor = None
         self.best_critic = None
 
+        self.training_logs = []
+        self.directory_name = directory_name
+        self.config_logs = []
+
+        self.max_episodes = 0
+        self.max_steps = 0
+        self.warm_up_memory = 0
+
+        self.video_dir = 'recorded_episodes'
+        self.all_recordings = []
+        self.manage_directory()
+
+        self.network_iteration = 1
+
+    def _get_configuration(self):
+        config_dict = defaultdict(int)
+        config_dict["Learning rate actor"] = self.ddpg.learning_rate_actor
+        config_dict["Learning rate critic"] = self.ddpg.learning_rate_critic
+        config_dict["Gamma"] = self.ddpg.gamma
+        config_dict["Tau"] = self.ddpg.tau
+        config_dict["Memory capacity"] = self.memory.max_capacity
+        config_dict["Batch size"] = self.memory.batch_size
+        config_dict["Theta"] = self.noise.theta
+        config_dict["Dt"] = self.noise.dt
+        config_dict["Decay constant"] = self.noise.decay_constant
+        config_dict["Max episodes"] = self.max_episodes
+        config_dict["Max steps"] = self.max_steps
+        config_dict["Warm up steps"] = self.warm_up_memory
+
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            self.ddpg.actor.summary()
+        summary_str = stream.getvalue()
+
+        config_dict["Actor architecture"] = summary_str
+
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            self.ddpg.critic.summary()
+        summary_str = stream.getvalue()
+        config_dict["Critic architecture"] = summary_str
+
+        return [f"{k}: {v}" for k, v in config_dict.items()]
+
     @tf.function
     def _forward(self, state):
         return tf.squeeze(self.ddpg.actor(tf.expand_dims(state, 0)), axis=0)
 
     """ Method responsible returning state based on current action and added noise"""
-    def _policy(self, state, noise, warmup_phase=False, training = True):
+    def _policy(self, state, noise, episode, warmup_phase=False, training = True):
         if warmup_phase:
             # Generate random joint position for each joint - in warmup phase
             legal_action = np.array([
@@ -47,8 +90,9 @@ class Agent:
             ], dtype=np.float32)
 
         else:
+            normalized_state = self._normalize_observation_space(state)
 
-            sampled_actions = self._forward(state)
+            sampled_actions = self._forward(normalized_state)
 
             if training:
                 noise_o = noise()
@@ -62,18 +106,30 @@ class Agent:
 
     """ Method responsible for normalizing bathc of states"""
     def _normalize_observation_space(self, current_state):
-        state = np.array(self.ddpg.running_normalizer.normalize(current_state))
-        return state
+        current_state = np.asarray(current_state, dtype=np.float32)
+
+        if current_state.ndim == 1:
+            return np.array(self.ddpg.running_normalizer.normalize(current_state))
+        else:
+            states = []
+            for state in current_state:
+                states.append(self.ddpg.running_normalizer.normalize(state))
+
+            return np.array(states)
 
     """ Method responsible for updating normalizer based on current state"""
-    def _update_observation_space(self, current_state):
-        self.ddpg.running_normalizer.update(current_state)
+    def _update_observation_space(self, episode_states):
+        for state in episode_states:
+            self.ddpg.running_normalizer.update(state)
 
     """ Video recording logic, it is used to make a video out of frames which are coming from the vision sensor in CoppeliaSim"""
     def _record_current_frames(self, episode, frames, start_time, reward_from_episode, avg_reward):
-        video_path = os.path.join(self.video_dir, f'episode_{episode}.mp4')
+        os.makedirs(self.directory_name, exist_ok=True)
+
+        video_path = os.path.join(self.directory_name, f"episode_{episode}.avi")
         height, width, _ = frames[0].shape
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        #fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         out = cv2.VideoWriter(video_path, fourcc, 20.0, (width, height))
 
         font = cv2.FONT_HERSHEY_SIMPLEX
@@ -87,7 +143,7 @@ class Agent:
             now_time = datetime.now() - start_time
             hours = now_time.days * 24 + now_time.seconds // 3600
             minutes = (now_time.seconds % 3600) // 60
-            cv2.putText(bgr_frame, f'Episode: {episode}, training time: {hours} hours, {minutes} minutes | Episode reward: {int(reward_from_episode)} | Average Episode reward: {int(avg_reward)}', position, font, font_scale, font_color, thickness,
+            cv2.putText(bgr_frame, f'Episode: {episode}, training time: {hours} hours, {minutes} minutes | Episode reward: {round(reward_from_episode, 2)} | Average Episode reward: {round(avg_reward, 2)}', position, font, font_scale, font_color, thickness,
                         cv2.LINE_AA)
             out.write(bgr_frame)
 
@@ -96,10 +152,10 @@ class Agent:
 
     """ Helper method, used to clear the current recording folder"""
     def manage_directory(self):
-        os.makedirs(self.video_dir, exist_ok=True)
+        os.makedirs(self.directory_name, exist_ok=True)
 
-        for filename in os.listdir(self.video_dir):
-            file_path = os.path.join(self.video_dir, filename)
+        for filename in os.listdir(self.directory_name):
+            file_path = os.path.join(self.directory_name, filename)
             if os.path.isfile(file_path):
                 os.remove(file_path)
 
@@ -109,19 +165,38 @@ class Agent:
 
         current_steps = 0
 
+        episode_states = []
         while current_steps < max_steps:
-            actions = self._policy(state, self.noise, warmup_phase=True)
-            next_state, reward, done, goal_reached = self.env.step(actions, episode)
+            #self._update_observation_space(state)
+            actions = self._policy(state, self.noise, episode, warmup_phase=True)
 
+            """ Joint target positions set """
+            self.env.set_joint_positions(actions, episode)
+
+            """ Step the simulation """
+            self.env.step_and_update()
+
+            current_simulation_count = 0
+            """ Wait until physic simulation is synced"""
+            while not self.env.all_joints_reached_targets():
+                current_simulation_count += 1
+
+                if current_simulation_count > self.env.max_simulation_count:
+                    break
+
+                """ Step the simulation """
+                self.env.step_and_update()
+
+            next_state, reward, done, goal_reached = self.env.get_step_results(episode, warmup = True)
+            episode_states.append(state)
             self.memory.insert_to_memory((state, actions, reward, next_state, done))
-            self._update_observation_space(state)
-
-            # self.update_network(episode)
 
             if done:
                 break
             current_steps += 1
             state = next_state
+
+        self._update_observation_space(episode_states)
 
     """ Main simulation logic """
     def run_episode(self, episode, max_steps=500, start_time=datetime.now(), avg_reward=0.0):
@@ -133,21 +208,52 @@ class Agent:
         frames = []
         goal_reached = False
 
+        episode_states = []
+        #print("-----------------")
         while current_steps < max_steps:
-            actions = self._policy(state, self.noise)
-            next_state, reward, done, goal_reached = self.env.step(actions, episode)
+            #self._update_observation_space(state)
+            actions = self._policy(state, self.noise, episode)
+
+            """ Joint target positions set """
+            self.env.set_joint_positions(actions, episode)
+
+            """ Step the simulation """
+            self.env.step_and_update()
 
             """ Capture frame if this is the 50th episode """
-            if episode % 500 == 0 and episode > 0:
-
+            if episode % 100 == 0:
                 """ We use handle_explicitly to turn on the sensor for a this capture"""
                 self.env.vision_sensor.handle_explicitly()
                 img = self.env.vision_sensor.capture_rgb()
                 img = (img * 255).astype(np.uint8)
                 frames.append(img)
 
+            current_simulation_count = 0
+            """ Wait until physic simulation is synced"""
+            while not self.env.all_joints_reached_targets():
+                current_simulation_count += 1
+
+                if current_simulation_count > self.env.max_simulation_count:
+                    break
+
+                """ Step the simulation """
+                self.env.step_and_update()
+
+                """ Capture frame if this is the 50th episode """
+                if episode % 100 == 0:
+                    """ We use handle_explicitly to turn on the sensor for a this capture"""
+                    self.env.vision_sensor.handle_explicitly()
+                    img = self.env.vision_sensor.capture_rgb()
+                    img = (img * 255).astype(np.uint8)
+                    frames.append(img)
+
+            next_state, reward, done, goal_reached = self.env.get_step_results(episode)
+
+            episode_states.append(state)
+
+            #TODO UNCOMMENT
             self.memory.insert_to_memory((state, actions, reward, next_state, done))
-            self._update_observation_space(state)
+
             reward_from_episode += reward
 
             self.update_network(episode)
@@ -157,8 +263,16 @@ class Agent:
             current_steps += 1
             state = next_state
 
+        """ Update running normalizer after episode ends"""
+        self._update_observation_space(episode_states)
+
+        # print(self.ddpg.running_normalizer.mean)
+        # print(episode_states[0])
+        # print(self.ddpg.running_normalizer.normalize(episode_states[0]))
+        # print("---------")
+
         reward_from_episode = round(reward_from_episode, 5)
-        if episode % 500 == 0 and episode > 0:
+        if episode % 100 == 0:
             self._record_current_frames(episode, frames, start_time, reward_from_episode, avg_reward)
 
         return reward_from_episode, goal_reached
@@ -171,8 +285,10 @@ class Agent:
         goal_reached = False
 
         while current_steps < max_steps:
-            actions = self._policy(state, self.noise, training=False)
+            actions = self._policy(state, self.noise, 0, training=False)
             next_state, reward, done, goal_reached = self.env.step(actions, None)
+
+            reward_from_episode += reward
 
             if done:
                 break
@@ -187,11 +303,17 @@ class Agent:
     def update_network(self, episode, termination_update=False):
         """ Update the networks every X steps"""
         #if self.memory.current_capacity >= self.memory.batch_size and self.memory.current_capacity % 5 == 0:
-        if (self.memory.current_capacity >= self.memory.batch_size and self.memory.current_capacity % 20 == 0) or termination_update:
+        # if self.network_iteration == 1 and self.memory.current_capacity > 100_000:
+        #     self.network_iteration = 4
+        #     print(f"Network iteration changed to {self.network_iteration}")
 
+        if (self.memory.current_capacity >= self.memory.batch_size and self.memory.current_capacity % 2 == 0) or termination_update:
+            #print(self.memory.current_capacity)
             state_batch, action_batch, reward_batch, next_state_batch, done_batch = self.memory.sample_from_memory()
+
             state_batch = self._normalize_observation_space(state_batch)
             next_state_batch = self._normalize_observation_space(next_state_batch)
+
 
             state_batch = tf.convert_to_tensor(state_batch, dtype=tf.float32)
             action_batch = tf.convert_to_tensor(action_batch, dtype=tf.float32)
@@ -205,35 +327,56 @@ class Agent:
             self.ddpg.train(episode, state_batch, action_batch, reward_batch, next_state_batch, done_batch)
 
 
-    def run_episodes(self, max_episodes=100, max_steps=500, warm_up_episodes=500, preload_warmup=False):
+    def run_episodes(self, max_episodes=100, max_steps=500, warm_up_memory=500, preload_warmup=False):
+        self.max_episodes = max_episodes
+        self.max_steps = max_steps
+        self.warm_up_memory = warm_up_memory
+
         episodes_rewards = deque(maxlen=1000)
         successive_goals_reached = 0
         init_time = datetime.now()
 
         if preload_warmup:
             print(f"Warm up - loading serialized memory")
-            with open("warmup_data_200/data.pkl", "rb") as f:
+            with open(f"{os.path.join('warmup_data_1207', 'memory_data.pkl')}", "rb") as f:
                 new_memory = pickle.load(f)
-                self.memory.state_memory = new_memory.state_memory
-                self.memory.action_memory = new_memory.action_memory
-                self.memory.reward_memory = new_memory.reward_memory
-                self.memory.next_state_memory = new_memory.next_state_memory
-                self.memory.done_memory = new_memory.done_memory
-                self.memory.current_capacity = new_memory.current_capacity
+                self.memory.state_memory = copy.deepcopy(new_memory.state_memory)
+                self.memory.action_memory = copy.deepcopy(new_memory.action_memory)
+                self.memory.reward_memory = copy.deepcopy(new_memory.reward_memory)
+                self.memory.next_state_memory = copy.deepcopy(new_memory.next_state_memory)
+                self.memory.done_memory = copy.deepcopy(new_memory.done_memory)
+                self.memory.current_capacity = copy.deepcopy(new_memory.current_capacity)
+
 
             print(f"Warm up finished - memory loaded")
-        else:
-            print(f"Warm up for {warm_up_episodes} episodes")
-            for episode in range(warm_up_episodes):
-                self.warmup_phase(episode, max_steps=max_steps)
 
-            with open("data.pkl", "wb") as f:
+            with open(f"{os.path.join('warmup_data_1207', 'running_normalizer_data.pkl')}", "rb") as f:
+                self.ddpg.running_normalizer = pickle.load(f)
+                self.env.distance_normalizer = pickle.load(f)
+                self.env.velocity_normalizer = pickle.load(f)
+            #     self.env.body_position_normalizer = pickle.load(f)
+
+            print("Warm up finished - normalizers loaded")
+        else:
+            print(f"Warm up for {warm_up_memory} steps")
+            while self.memory.current_capacity <= warm_up_memory:
+            #for episode in range(warm_up_episodes):
+                self.warmup_phase(None, max_steps=max_steps)
+
+            with open("memory_data.pkl", "wb") as f:
                 pickle.dump(self.memory, f)
+
+            with open("running_normalizer_data.pkl", "wb") as f:
+                pickle.dump(self.ddpg.running_normalizer, f)
+                pickle.dump(self.env.distance_normalizer, f)
+                pickle.dump(self.env.velocity_normalizer, f)
+                # pickle.dump(self.env.body_position_normalizer, f)
 
             print(f"Warm up finished in { ((datetime.now() - init_time).total_seconds()) / 60} minutes")
 
         threshold_avg_rewards = [float('-inf')]
-        for episode in range(max_episodes):
+        #print(f"Min: {self.env.reward_min} | Max: {self.env.reward_max}")
+        for episode in range(max_episodes+1):
             start_time = time.time()
             current_avg = 0.0 if len(episodes_rewards) == 0 else float(np.mean(episodes_rewards))
             reward_episode, goal_reached = self.run_episode(episode, max_steps, init_time, current_avg)
@@ -242,6 +385,7 @@ class Agent:
 
             if goal_reached:
                 successive_goals_reached += 1
+                self.training_logs.append("Target reached")
             else:
                 successive_goals_reached = 0
 
@@ -249,20 +393,17 @@ class Agent:
             avg_reward = round(np.mean(episodes_rewards), 5)
 
             print(f"Episode * {episode} * - Reward: {reward_episode} ; Avg Reward is ==> {avg_reward} ; Ep. time is ==> {round(end_time - start_time, 2)}")
-            #self.avg_episodes_rewards.append(avg_reward)
-
-            # """ Purge cache every 500 episodes due to previous high memory consumption"""
-            # if episode % 500 == 0 and episode > 0:
-            #     #tf.keras.backend.clear_session()
-            #     gc.collect()
+            self.training_logs.append(f"Episode * {episode} * - Reward: {reward_episode} ; Avg Reward is ==> {avg_reward} ; Ep. time is ==> {round(end_time - start_time, 2)}")
 
             """ Tensorboard logging logic """
-            # with self.ddpg.summary_writer.as_default():
-            #     tf.summary.scalar('Episode Reward', reward_episode, step=episode)
+            with self.ddpg.summary_writer.as_default():
+                tf.summary.scalar('Episode Reward', reward_episode, step=episode)
 
-            # if successive_goals_reached >= 20:
-            #     print("Agent learned policy")
-            #     break
+            if successive_goals_reached >= 20:
+                message = "Agent learned policy"
+                self.training_logs.append(message)
+                print(message)
+                break
             avg_reward_small = round(np.mean(list(episodes_rewards)[-200:]), 3)
             if avg_reward_small > self.best_reward and episode >= 1000:
                 self.best_reward = avg_reward_small
@@ -272,18 +413,27 @@ class Agent:
                 self.best_critic = tf.keras.models.clone_model(self.ddpg.critic)
                 self.best_critic.set_weights(self.ddpg.critic.get_weights())
 
-                print(f"New best average reward: {self.best_reward}")
+                message = f"New best average reward: {self.best_reward}"
+                self.training_logs.append(message)
+                print(message)
 
             if episode % 1000 == 0 and episode > 0:
                 # Noise decay
                 self.noise.decay(self.env.action_space.shape)
-                print(f"Noice decayed to {self.noise.std_dev[0]}")
 
-                if avg_reward < threshold_avg_rewards[-1] and episode > 3000:
-                    print("Agent is not learning")
+                message = f"Noise decayed to {self.noise.std_dev[0]}"
+                self.training_logs.append(message)
+                print(message)
+
+                if avg_reward < threshold_avg_rewards[-1] and episode > 10_000:
+                    message = "Agent is not learning"
+                    self.training_logs.append(message)
+                    print(message)
                     break
                 threshold_avg_rewards.append(avg_reward)
 
+        # for mean in self.ddpg.running_normalizer.mean:
+        #     print(f"Running mean: {mean}")
         self.env.close()
 
     """ Testing phase"""
@@ -291,7 +441,7 @@ class Agent:
     def run_test(self, max_episodes=10, max_steps=5000):
         for episode in range(max_episodes):
             reward_episode, goal_reached = self.run_test_episode(max_steps)
-
+            print(f"Episode {episode} * - Reward: {reward_episode}")
         self.env.close()
 
 
@@ -299,22 +449,31 @@ class Agent:
     def save_results(self, directory):
         os.makedirs(directory, exist_ok=True)
 
-        # self.ddpg.actor.save_weights(f"{directory}/hexapod_actor.weights.h5")
-        # self.ddpg.critic.save_weights(f"{directory}/hexapod_critic.weights.h5")
-        # self.ddpg.target_actor.save_weights(f"{directory}/hexapod_target_actor.weights.h5")
-        # self.ddpg.target_critic.save_weights(f"{directory}/hexapod_target_critic.weights.h5")
-
         print(f"Saving models with average reward {round(self.best_reward, 5)}")
-        self.best_actor.save_weights(f"{directory}/hexapod_actor.h5")
-        self.best_critic.save_weights(f"{directory}/hexapod_critic.h5")
+        try:
+            self.best_actor.save_weights(os.path.join(directory, "hexapod_actor.h5"))
+            self.best_critic.save_weights(os.path.join(directory, "hexapod_critic.h5"))
+        except Exception as e:
+            print("Best models were not saved, not enough training")
+
+        print(f"Saving training logs to {os.path.join(directory, 'training_logs.txt')}")
+
+        with open(f"{os.path.join(self.directory_name, 'training_logs.txt')}", "w") as f:
+            f.write("\n".join(self.training_logs))
+
+        print(f"Saving configurational logs to {os.path.join(directory, 'config_logs.txt')}")
+        self.config_logs = self._get_configuration()
+        with open(f"{os.path.join(self.directory_name, 'config_logs.txt')}", "w") as f:
+            f.write("\n".join(self.config_logs))
 
     """ Merge separate episode recording into one video """
     def merge_recordings(self):
         #height, width = (1080, 1920)
         height, width = (720, 1280)
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
 
-        out = cv2.VideoWriter("recorded_episodes/merged_videos.mp4", fourcc, 20.0, (width, height))
+        video_path = os.path.join(self.directory_name, "merged_videos.avi")
+        out = cv2.VideoWriter(video_path, fourcc, 20.0, (width, height))
 
         for video_file in self.all_recordings:
             cap = cv2.VideoCapture(video_file)
@@ -330,8 +489,8 @@ class Agent:
         out.release()
 
     def load_weights(self):
-        self.ddpg.actor.load_weights("251112_test_4096batch_30_ep/hexapod_actor.h5")
-        self.ddpg.critic.load_weights("251112_test_4096batch_30_ep/hexapod_critic.h5")
+        self.ddpg.actor.load_weights("251114_test_4096batch_20_ep/hexapod_actor.h5")
+        self.ddpg.critic.load_weights("251114_test_4096batch_20_ep/hexapod_critic.h5")
 
         #
         # self.ddpg.actor.load_weights(" ")

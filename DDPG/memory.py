@@ -16,6 +16,8 @@ class Memory:
 
     """ Insert a sample into memory """
     def insert_to_memory(self, observation):
+        if self.current_capacity % self.max_capacity == 0:
+            print("Memory is full - indexing from 0")
         current_index = self.current_capacity%self.max_capacity
 
         self.state_memory[current_index] = observation[0]

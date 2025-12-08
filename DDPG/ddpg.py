@@ -1,6 +1,6 @@
 import tensorflow as tf
 from tensorflow.keras import mixed_precision
-from tensorflow.keras.layers import Dense, Input, Concatenate, Lambda, BatchNormalization
+from tensorflow.keras.layers import Dense, Input, Concatenate, Lambda, BatchNormalization, LayerNormalization, Activation
 
 from DDPG.running_normalizer import RunningNormalizer
 
@@ -17,6 +17,11 @@ class DDPG:
         self.gamma = gamma
         self.tau = tau
 
+        # """ Mixed precision policy"""
+        # policy = mixed_precision.Policy('mixed_float16')
+        # tf.keras.mixed_precision.set_global_policy('mixed_float16')
+        # mixed_precision.set_global_policy(policy)
+
         """ Create networks during initialization """
         self.actor = self.create_actor()
         self.critic = self.create_critic()
@@ -29,15 +34,13 @@ class DDPG:
         self.target_actor.set_weights(self.actor.get_weights())
         self.target_critic.set_weights(self.critic.get_weights())
 
-        policy = mixed_precision.Policy('mixed_float16')
-        tf.keras.mixed_precision.set_global_policy('mixed_float16')
-        mixed_precision.set_global_policy(policy)
-
         """ Create optimizers """
-        self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate_actor)
-        self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate_critic)
-        self.critic_optimizer = mixed_precision.LossScaleOptimizer(self.critic_optimizer, dynamic=True)
-        self.actor_optimizer = mixed_precision.LossScaleOptimizer(self.actor_optimizer, dynamic=True)
+        self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate_actor, epsilon=1e-7)
+        self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate_critic, epsilon=1e-7)
+
+
+        # self.critic_optimizer = mixed_precision.LossScaleOptimizer(self.critic_optimizer, dynamic=True)
+        # self.actor_optimizer = mixed_precision.LossScaleOptimizer(self.actor_optimizer, dynamic=True)
 
         self.running_normalizer = RunningNormalizer((self.number_of_states[0],))
 
@@ -55,16 +58,21 @@ class DDPG:
         actor_model = tf.keras.Sequential(
             [
                 Input(shape=self.number_of_states),
-                Dense(200, activation="relu"),
-                BatchNormalization(),
-                Dense(200, activation="relu"),
-                BatchNormalization(),
-                Dense(200, activation="relu"),
-                BatchNormalization(),
+                Dense(512),
+                LayerNormalization(),
+                Activation("relu"),
+                #concat = LayerNormalization()(concat)
+                #BatchNormalization(),
+                Dense(512),
+                LayerNormalization(),
+                Activation("relu"),
+                #BatchNormalization(),
+                #Dense(512, activation="relu"),
+                #BatchNormalization(),
                 Dense(self.number_of_actions[0], activation="tanh", kernel_initializer=last_init)
             ]
         )
-        """ Scaling the output due to difference between tanh (0-1) range and action range """
+        """ Scaling the output due to difference between tanh (-1 ; 1) range and action range """
         actor_model.add(Lambda(lambda x: x * self.upper_bound))
 
         return actor_model
@@ -72,15 +80,19 @@ class DDPG:
     """ Method containing critic network architecture"""
     def create_critic(self):
         state_input = Input(shape=self.number_of_states)
-        state_out = Dense(300, activation="relu")(state_input)
-        state_out = BatchNormalization()(state_out)
+        state_out = Dense(512, activation="relu")(state_input)
+        state_out = Dense(512, activation="relu")(state_out)
+
+        #state_out = BatchNormalization()(state_out)
 
         action_input = Input(shape=self.number_of_actions)
-        action_out = Dense(100, activation="relu")(action_input)
+        action_out = Dense(512, activation="relu")(action_input)
+        #action_out = BatchNormalization()(action_out)
 
         concat = Concatenate()([state_out, action_out])
 
-        out = Dense(100, activation="relu")(concat)
+        out = Dense(64, activation="relu")(concat)
+        out = Dense(64, activation="relu")(out)
 
         outputs = Dense(1)(out)
 
@@ -103,11 +115,11 @@ class DDPG:
     """ Helper method containing training logic """
     @tf.function(
         input_signature=[
-            tf.TensorSpec(shape=(4096, 135), dtype=tf.float32),
-            tf.TensorSpec(shape=(4096, 18), dtype=tf.float32),
-            tf.TensorSpec(shape=(4096, 1), dtype=tf.float32),
-            tf.TensorSpec(shape=(4096, 135), dtype=tf.float32),
-            tf.TensorSpec(shape=(4096, 1), dtype=tf.bool)
+            tf.TensorSpec(shape=(256, 135), dtype=tf.float32),
+            tf.TensorSpec(shape=(256, 18), dtype=tf.float32),
+            tf.TensorSpec(shape=(256, 1), dtype=tf.float32),
+            tf.TensorSpec(shape=(256, 135), dtype=tf.float32),
+            tf.TensorSpec(shape=(256, 1), dtype=tf.bool)
         ],
         jit_compile=True,
         reduce_retracing=True
@@ -123,11 +135,12 @@ class DDPG:
 
             critic_value = self.critic([state_batch, action_batch], training=True)
             critic_loss = tf.reduce_mean(tf.square(y - critic_value))
-            scaled_critic_loss = self.critic_optimizer.get_scaled_loss(critic_loss)
+            #scaled_critic_loss = self.critic_optimizer.get_scaled_loss(critic_loss)
 
-        scaled_critic_grad = tape.gradient(scaled_critic_loss, self.critic.trainable_variables)
-        critic_grad = self.critic_optimizer.get_unscaled_gradients(scaled_critic_grad)
-        critic_grad, _ = tf.clip_by_global_norm(critic_grad, 1.0)
+        #scaled_critic_grad = tape.gradient(scaled_critic_loss, self.critic.trainable_variables)
+        critic_grad = tape.gradient(critic_loss, self.critic.trainable_variables)
+        #critic_grad = self.critic_optimizer.get_unscaled_gradients(scaled_critic_grad)
+        critic_grad, _ = tf.clip_by_global_norm(critic_grad, 5.0)
         self.critic_optimizer.apply_gradients(zip(critic_grad, self.critic.trainable_variables))
 
         """ Actor training logic """
@@ -135,10 +148,12 @@ class DDPG:
             actions = self.actor(state_batch, training=True)
             critic_value_for_actor = self.critic([state_batch, actions], training=False)
             actor_loss = -tf.reduce_mean(critic_value_for_actor)
-            scaled_actor_loss = self.actor_optimizer.get_scaled_loss(actor_loss)
+            #scaled_actor_loss = self.actor_optimizer.get_scaled_loss(actor_loss)
 
-        scaled_actor_grad = tape.gradient(scaled_actor_loss, self.actor.trainable_variables)
-        actor_grad = self.actor_optimizer.get_unscaled_gradients(scaled_actor_grad)
+        #scaled_actor_grad = tape.gradient(scaled_actor_loss, self.actor.trainable_variables)
+        actor_grad = tape.gradient(actor_loss, self.actor.trainable_variables)
+        #actor_grad = self.actor_optimizer.get_unscaled_gradients(scaled_actor_grad)
+        actor_grad, _ = tf.clip_by_global_norm(actor_grad, 1.0)
         self.actor_optimizer.apply_gradients(zip(actor_grad, self.actor.trainable_variables))
 
 
@@ -148,8 +163,8 @@ class DDPG:
         for target_param, param in zip(self.target_actor.variables, self.actor.variables):
             target_param.assign(self.tau * param + (1 - self.tau) * target_param)
 
-        #return critic_loss, actor_loss, tf.reduce_mean(critic_value_for_actor)
-        return None, None, None
+        return critic_loss, actor_loss, tf.reduce_mean(critic_value_for_actor)
+        #return None, None, None
 
     """ Method responsible for updating networks and logging """
     def train(self, episode, state_batch, action_batch, reward_batch, next_state_batch, done_batch):
@@ -157,12 +172,12 @@ class DDPG:
             state_batch, action_batch, reward_batch, next_state_batch, done_batch
         )
 
-        # self.critic_loss = float(critic_loss)
-        # self.actor_loss = float(actor_loss)
-        # self.avg_q_value = float(avg_q_value)
-        #
-        # """ Tensorboard logging"""
-        # with self.summary_writer.as_default():
-        #     tf.summary.scalar('Actor Loss', self.actor_loss, step=episode)
-        #     tf.summary.scalar('Critic Loss', self.critic_loss, step=episode)
-        #     tf.summary.scalar('Q-Value', self.avg_q_value, step=episode)
+        self.critic_loss = float(critic_loss)
+        self.actor_loss = float(actor_loss)
+        self.avg_q_value = float(avg_q_value)
+
+        """ Tensorboard logging"""
+        with self.summary_writer.as_default():
+            tf.summary.scalar('Actor Loss', self.actor_loss, step=episode)
+            tf.summary.scalar('Critic Loss', self.critic_loss, step=episode)
+            tf.summary.scalar('Q-Value', self.avg_q_value, step=episode)

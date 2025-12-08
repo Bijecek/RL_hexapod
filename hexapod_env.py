@@ -8,7 +8,9 @@ from pyrep.objects.joint import Joint
 from pyrep.objects.object import Object
 from cffi import FFI
 
+from DDPG.running_min_max_normalizer import RunningMinMaxNormalizer
 from DDPG.running_normalizer import RunningNormalizer
+
 
 """ Class responsible for defining environment rules and simulation logic """
 class HexapodEnv:
@@ -42,7 +44,8 @@ class HexapodEnv:
 
         self.rewards = rewards
 
-        self.robot = Object.get_object('hexa_body')
+        self.robot = Object.get_object('hexa_base')
+        self.robot_body = Object.get_object('hexa_body')
         self.goal = Object.get_object('Target')
 
         self.initial_position = self.robot.get_position()
@@ -51,30 +54,73 @@ class HexapodEnv:
         self.max_tilt_penalization = np.deg2rad(75)
         self.max_tilt_termination = np.deg2rad(90)
 
-        self.reward_normalizer = RunningNormalizer(shape=(1,))
+        #self.reward_normalizer = RunningNormalizer(shape=(1,))
         self.target_range = 2000.0 / 300.0
 
+        self.distance_normalizer = RunningNormalizer(shape=(1,))
+        #self.velocity_normalizer = RunningNormalizer(shape=(1,))
+        self.velocity_normalizer = RunningMinMaxNormalizer()
+
+        self.reward_min = float('inf')
+        self.reward_max = float('-inf')
+
+        self.current_distances = []
+        self.current_velocities = []
+        self.current_rewards = []
+
+        # TODO 10 ?
+        self.max_simulation_count = 5
 
 
     """ Method responsible for setting new joint positions, advancing to the next state and returning relevant information about this action"""
-    def step(self, action, episode):
+    def set_joint_positions(self, action, episode):
         for joint, value in zip(self.joints, action):
             joint.set_joint_target_position(value)
 
+    def step_and_update(self):
         self.pr.step()
-
         self._update_state()
 
+    def get_step_results(self, episode, warmup = False):
         obs = self._get_observation()
         done, goal_reached = self._check_termination()
-        reward = self._calculate_reward(episode, goal_reached, done)
+        reward = self._calculate_reward(episode, goal_reached, done, warmup)
 
         return obs, reward, done, goal_reached
+
+    def all_joints_reached_targets(self, position_tolerance=0.05, velocity_tolerance=0.05):
+        for index, j in enumerate(self.joints):
+            pos = j.get_joint_position()
+            target = j.get_joint_target_position()
+            vel_lin, vel_ang = j.get_velocity()
+
+            pos_not_synced = abs(pos - target) > position_tolerance
+
+            high_velocity = np.linalg.norm(vel_lin) > velocity_tolerance and np.linalg.norm(vel_ang) > velocity_tolerance
+
+            if pos_not_synced and high_velocity:
+                return False
+
+        return True
 
     """ Method responsible for resetting the simulation"""
     def reset(self):
         self.previous_distance = None
         self.previous_joint_positions = None
+
+        for distance in self.current_distances:
+            self.distance_normalizer.update(distance)
+
+        for velocity in self.current_velocities:
+            self.velocity_normalizer.update(velocity)
+
+        # for reward in self.current_rewards:
+        #     self.reward_normalizer.update(reward)
+
+        #
+        self.current_distances = []
+        self.current_velocities = []
+        # self.current_rewards = []
 
         self.pr.stop()
 
@@ -87,23 +133,25 @@ class HexapodEnv:
         return observation
 
     def _update_state(self):
-        self.robot = Object.get_object('hexa_body')
+        self.robot = Object.get_object('hexa_base')
+        self.robot_body = Object.get_object('hexa_body')
 
     """ Method responsible for handling observation space logic """
     def _get_observation(self):
         """ Get hexapod joint positions """
-        positions = np.array([joint.get_joint_position() for joint in self.joints])
-        linear_velocities = []
-        angular_velocities = []
+        num_joints = len(self.joints)
+        linear_velocities = np.zeros(num_joints*3)
+        angular_velocities = np.zeros(num_joints*3)
+        positions = np.zeros(num_joints)
 
         """ Get both linear and angular joint velocities """
-        for joint in self.joints:
+        for i, joint in enumerate(self.joints):
             linear, angular = joint.get_velocity()
-            linear_velocities.append(linear)
-            angular_velocities.append(angular)
 
-        linear_velocities = np.array(linear_velocities).flatten()
-        angular_velocities = np.array(angular_velocities).flatten()
+            linear_velocities[i * 3:(i + 1) * 3] = linear
+            angular_velocities[i * 3:(i + 1) * 3] = angular
+            positions[i] = joint.get_joint_position()
+
 
         """ Get relevant information about hexapod """
         linear, angular = self.robot.get_velocity()
@@ -115,77 +163,127 @@ class HexapodEnv:
 
     """ Method responsible for calculating velocity of hexapod towards the goal"""
     def _calculate_robot_velocity(self):
-        direction = self.goal.get_position().flatten() - self.robot.get_position().flatten()
+        direction = self.goal.get_position() - self.robot.get_position()
         direction_norm = np.linalg.norm(direction)
         direction_to_goal_normalized = direction / (direction_norm + 1e-8)
 
         linear, _ = self.robot.get_velocity()
-        velocity = np.array(linear).flatten()
-        velocity_toward_goal = float(np.dot(velocity, direction_to_goal_normalized))
+
+        velocity_toward_goal = float(np.dot(linear.flatten(), direction_to_goal_normalized))
 
         return velocity_toward_goal
 
+    """ Scale reward to [-10; 10] range"""
+    def _scale_reward(self, raw_value, min_value, max_value):
+        new_min = -10
+        new_max = 10
+        new_interval = new_max - new_min
+        return new_min + (raw_value - min_value) * (new_interval / (max_value - min_value))
+
     """ Method responsible for calculating reward based on the current state of hexapod """
-    def _calculate_reward(self, episode, goal_reached, done):
-
+    def _calculate_reward(self, episode, goal_reached, done, warmup):
         current_distance = np.linalg.norm(self.robot.get_position() - self.goal.get_position())
+        distance = 0
 
-        """ Save previous distance to target"""
-        if self.previous_distance is None:
-            #self.initial_distance = np.linalg.norm(self.robot.get_position() - self.goal.get_position())
-            #self.previous_distance = self.initial_distance
-            distance_reward = 0
+        if self.previous_distance is not None:
+            distance = self.previous_distance - current_distance
 
-        else:
+        if distance != 0:
+            self.current_distances.append(distance)
+            #self.distance_normalizer.update(distance)
+        distance_reward = self.distance_normalizer.normalize(distance)[0]
+        distance_reward = np.clip(distance_reward, -3, 3)
 
-            """ Calculate reward, based on distance difference """
-            distance_reward = (self.previous_distance - current_distance)
 
         self.previous_distance = current_distance
 
-        velocity_reward = self._calculate_robot_velocity()
 
+        velocity = self._calculate_robot_velocity()
+        if warmup:
+            self.velocity_normalizer.update(velocity)
+        velocity_reward = self.velocity_normalizer.normalize(velocity)
+        #velocity_reward = np.clip(velocity_reward, -3, 3)
+
+
+        """ Scale to range [-1; 1] """
+        #velocity_reward = np.clip(velocity_reward, -1, 1)
+        #print("velocity_reward ", velocity_reward)
 
 
         roll, pitch, _ = self.robot.get_orientation()
-        tilt_reward, goal_reached_reward, fell_to_the_side_reward = 0, 0, 0
+        tilt_reward, goal_reached_reward, fell_to_the_side_reward, body_height_reward = 0, 0, 0, 0
+        alive_reward = 1
+
+        fell_over = False
         """ Penalize too much tilt"""
-        if abs(roll) > self.max_tilt_penalization or abs(pitch) > self.max_tilt_penalization:
-            tilt_reward = -10
+        if abs(roll) >= self.max_tilt_penalization:
+            """ Scale to range [-1; -0.7]"""
+            tilt_reward = -(min(abs(roll), np.deg2rad(90.0)) / self.max_tilt_termination)
+        elif abs(pitch) >= self.max_tilt_penalization:
+            tilt_reward = -(min(abs(pitch), np.deg2rad(90.0)) / self.max_tilt_termination)
+        else:
+            tilt_reward = 0.001
+
+        if tilt_reward == -1:
+            #print("Robot fell")
+            fell_over = True
+
+
 
         if goal_reached:
-            goal_reached_reward = 500
+            goal_reached_reward = 1
 
         if not goal_reached and done:
-            fell_to_the_side_reward = -100
+            fell_to_the_side_reward = -1
 
-        x, y, z = self.robot.get_position()
+        """ Penalize body Z - position"""
+        x, y, z = self.robot_body.get_position()
 
-        body_height_reward = abs(z) * 10
+        """ Proportional to the Z - position"""
+        #print(z)
+        if z <= 0.2:
+            body_height_reward = -1 + (z / 0.20)
+        else:
+            body_height_reward = 0.001
+
+        # self.body_position_normalizer.update_single(z)
+        # z = self.body_position_normalizer.normalize(z)[0]
+        # body_height_reward = np.clip(z / 3.0, -1, 1)
 
         """ Reward for staying alive (encourages robot to not roll over)"""
-        #alive_reward = 1
 
         match self.rewards:
-            case 1:
-                total_reward = (distance_reward *100) + (velocity_reward * 10) + tilt_reward + goal_reached_reward + fell_to_the_side_reward# + alive_reward
+            # case 1:
+            #     total_reward = (
+            #         0.6 * (distance_reward + velocity_reward + tilt_reward) / 3 +
+            #         0.3 * (goal_reached_reward) +
+            #         0.1 * (fell_to_the_side_reward)
+            #     )
+                #total_reward = (distance_reward *100) + (velocity_reward * 10) + tilt_reward + goal_reached_reward + fell_to_the_side_reward# + alive_reward
+            # case 2:
+            #     total_reward = (
+            #             np.clip( 0.3 * ( velocity_reward ), -1.0, 1.0) +
+            #             0.7 * (tilt_reward + body_height_reward)/2
+            #             )
             case 2:
-                total_reward = (distance_reward * 100) + (velocity_reward * 10) + tilt_reward + goal_reached_reward + fell_to_the_side_reward + body_height_reward
+                if fell_over:
+                    total_reward = -1
+                elif goal_reached:
+                    total_reward = 10
+                else:
+                    total_reward = (
+                        0.5 * (velocity_reward)+
+                        0.5 * (tilt_reward + body_height_reward) / 2
+                    )
+                    total_reward = np.clip(total_reward, -1, 1)
+            case _:
+                total_reward = 0
 
-        #self.reward_normalizer.update(np.array([[total_reward]], dtype=np.float32))
 
-        # if episode > 100:
-        #     normalized_reward = self.reward_normalizer.normalize(np.array([[total_reward]], dtype=np.float32))[0, 0]
-        #
-        #     # Scale to your desired target range (e.g., ±2000)
-        #     scaled_reward = normalized_reward * self.target_range
-        #
-        #     #return total_reward
-        #     print(f"{total_reward} vs {normalized_reward:.2f} vs {scaled_reward:.2f}")
-        #
-        #     return scaled_reward
+        """ Scale to [-10; 10]"""
+        #total_reward = np.clip(total_reward, -1, 1)
 
-        return round(total_reward, 5)
+        return total_reward
 
     """ Method that checks if the episode should end """
     def _check_termination(self):
@@ -197,7 +295,7 @@ class HexapodEnv:
 
         """ Terminate episode if the robot is close enough to the target"""
         current_distance = np.linalg.norm(self.robot.get_position() - self.goal.get_position())
-        if current_distance < 3.0:
+        if current_distance < 1.0:
             print("Target reached")
             return True, True
 
