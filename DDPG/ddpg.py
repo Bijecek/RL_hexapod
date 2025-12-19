@@ -58,17 +58,20 @@ class DDPG:
         actor_model = tf.keras.Sequential(
             [
                 Input(shape=self.number_of_states),
-                Dense(512),
+                Dense(256),
                 LayerNormalization(),
                 Activation("relu"),
                 #concat = LayerNormalization()(concat)
                 #BatchNormalization(),
-                Dense(512),
+                Dense(256),
                 LayerNormalization(),
                 Activation("relu"),
-                #BatchNormalization(),
-                #Dense(512, activation="relu"),
-                #BatchNormalization(),
+
+                Dense(256),
+                LayerNormalization(),
+                Activation("relu"),
+
+
                 Dense(self.number_of_actions[0], activation="tanh", kernel_initializer=last_init)
             ]
         )
@@ -83,42 +86,43 @@ class DDPG:
         state_out = Dense(512, activation="relu")(state_input)
         state_out = Dense(512, activation="relu")(state_out)
 
+
         #state_out = BatchNormalization()(state_out)
 
         action_input = Input(shape=self.number_of_actions)
-        action_out = Dense(512, activation="relu")(action_input)
+        action_out = Dense(256, activation="relu")(action_input)
         #action_out = BatchNormalization()(action_out)
 
         concat = Concatenate()([state_out, action_out])
 
-        out = Dense(64, activation="relu")(concat)
-        out = Dense(64, activation="relu")(out)
+        out = Dense(512, activation="relu")(concat)
+        out = Dense(512, activation="relu")(out)
 
         outputs = Dense(1)(out)
 
         model = tf.keras.Model([state_input, action_input], outputs)
         return model
 
-    """ Method handling soft updates for both target actor and target critic networks"""
-    def update_target_models(self):
-        self._soft_update(self.actor, self.target_actor)
-        self._soft_update(self.critic, self.target_critic)
-
-    """ Helper method containing soft update logic"""
-    def _soft_update(self, source_model, target_model):
-        new_weights = []
-        target_variables = target_model.weights
-        for i, weight in enumerate(source_model.weights):
-            new_weights.append(self.tau * weight + (1 - self.tau) * target_variables[i])
-        target_model.set_weights(new_weights)
+    # """ Method handling soft updates for both target actor and target critic networks"""
+    # def update_target_models(self):
+    #     self._soft_update(self.actor, self.target_actor)
+    #     self._soft_update(self.critic, self.target_critic)
+    #
+    # """ Helper method containing soft update logic"""
+    # def _soft_update(self, source_model, target_model):
+    #     new_weights = []
+    #     target_variables = target_model.weights
+    #     for i, weight in enumerate(source_model.weights):
+    #         new_weights.append(self.tau * weight + (1 - self.tau) * target_variables[i])
+    #     target_model.set_weights(new_weights)
 
     """ Helper method containing training logic """
     @tf.function(
         input_signature=[
-            tf.TensorSpec(shape=(256, 135), dtype=tf.float32),
+            tf.TensorSpec(shape=(256, 60), dtype=tf.float32),
             tf.TensorSpec(shape=(256, 18), dtype=tf.float32),
             tf.TensorSpec(shape=(256, 1), dtype=tf.float32),
-            tf.TensorSpec(shape=(256, 135), dtype=tf.float32),
+            tf.TensorSpec(shape=(256, 60), dtype=tf.float32),
             tf.TensorSpec(shape=(256, 1), dtype=tf.bool)
         ],
         jit_compile=True,

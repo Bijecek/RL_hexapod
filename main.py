@@ -7,23 +7,24 @@ import sys
 from tensorflow.python.ops.gen_experimental_dataset_ops import experimental_csv_dataset
 
 from DDPG.agent import Agent
-from DDPG.ddpg import DDPG
+# from DDPG.ddpg import DDPG
+from DDPG.td3 import TD3
 from DDPG.memory import Memory
 from DDPG.noise import Noise
 from hexapod_env import HexapodEnv
 
 def _run(env, directory_name):
-    ddpg = DDPG(env.observation_space.shape, env.action_space.shape,
+    td3 = TD3(env.observation_space.shape, env.action_space.shape,
                 env.action_space.high[0], env.action_space.low[0],
-                0.0001, 0.0001, gamma=0.99, tau=0.0001)
-    memory = Memory(500_000, env.observation_space.shape[0], env.action_space.shape[0], batch_size=256)
+                0.0001, 0.001, gamma=0.99, tau=0.005)
+    memory = Memory(1_000_000, env.observation_space.shape[0], env.action_space.shape[0], batch_size=256)
 
 
     noise = Noise(std_deviation=float(0.3),
-                  theta=0.15, dt=0.05, decay_constant=0.90, noise_shape=env.action_space.shape)
+                  theta=0.15, dt=0.05, decay_constant=0.98, noise_shape=env.action_space.shape)
 
-    agent = Agent(env, ddpg, memory, noise, False, directory_name)
-    agent.run_episodes(max_episodes=20_000, max_steps=300, warm_up_memory=10_000, preload_warmup=True)
+    agent = Agent(env, td3, memory, noise, False, directory_name)
+    agent.run_episodes(max_episodes=20_000, max_steps=20, warm_up_memory=3_000, preload_warmup=False)
     agent.save_results(directory_name)
     agent.merge_recordings()
 

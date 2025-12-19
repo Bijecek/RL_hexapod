@@ -8,6 +8,9 @@ class Memory:
         self.current_capacity = 0
         self.batch_size = batch_size
 
+        self.number_of_states = number_of_states
+        self.number_of_actions = number_of_actions
+
         self.state_memory = np.zeros((self.max_capacity, number_of_states), dtype=np.float32)
         self.action_memory = np.zeros((self.max_capacity, number_of_actions), dtype=np.float32)
         self.reward_memory = np.zeros((self.max_capacity,1), dtype=np.float32)
@@ -16,7 +19,7 @@ class Memory:
 
     """ Insert a sample into memory """
     def insert_to_memory(self, observation):
-        if self.current_capacity % self.max_capacity == 0:
+        if self.current_capacity % self.max_capacity == 0 and self.current_capacity > 0:
             print("Memory is full - indexing from 0")
         current_index = self.current_capacity%self.max_capacity
 
@@ -41,3 +44,11 @@ class Memory:
 
         return state_batch, action_batch, reward_batch, next_state_batch, done_batch
 
+    def clear_memory(self):
+        self.current_capacity = 0
+
+        self.state_memory = np.zeros((self.max_capacity, self.number_of_states), dtype=np.float32)
+        self.action_memory = np.zeros((self.max_capacity, self.number_of_actions), dtype=np.float32)
+        self.reward_memory = np.zeros((self.max_capacity, 1), dtype=np.float32)
+        self.next_state_memory = np.zeros((self.max_capacity, self.number_of_states), dtype=np.float32)
+        self.done_memory = np.zeros((self.max_capacity, 1), dtype=np.bool_)

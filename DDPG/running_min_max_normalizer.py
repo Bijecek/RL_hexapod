@@ -15,3 +15,9 @@ class RunningMinMaxNormalizer:
             x = float(np.clip(x, -self.maximum_value, self.maximum_value))
 
         return 2 * ( (x - -self.maximum_value) / (self.maximum_value - -self.maximum_value) ) - 1
+
+    def normalize_restricted(self, x):
+        if abs(x) > self.maximum_value:
+            x = float(np.clip(x, -self.maximum_value, self.maximum_value))
+
+        return (x + self.maximum_value) / (2 * self.maximum_value)
