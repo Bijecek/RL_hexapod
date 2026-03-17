@@ -12,7 +12,7 @@ from DDPG.td3 import TD3
 from DDPG.memory import Memory
 import tensorflow as tf
 import gc
-from DDPG.noise import Noise
+from DDPG.ou_noise import Noise
 import time
 import numpy as np
 import cv2
@@ -525,11 +525,7 @@ class Agent:
         self.td3.actor.load_weights("251114_test_4096batch_20_ep/hexapod_actor.h5")
         self.td3.critic.load_weights("251114_test_4096batch_20_ep/hexapod_critic.h5")
 
-        #
-        # self.ddpg.actor.load_weights(" ")
-        # self.ddpg.critic.load_weights("Saved_weights/v2_5000ep_3500avg/hexapod_critic.weights.h5")
-        # self.ddpg.target_actor.load_weights("Saved_weights/v2_5000ep_3500avg/hexapod_target_actor.weights.h5")
-        # self.ddpg.target_critic.load_weights("Saved_weights/v2_5000ep_3500avg/hexapod_target_critic.weights.h5")
+
 
 
 

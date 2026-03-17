@@ -19,8 +19,8 @@ class Memory:
 
     """ Insert a sample into memory """
     def insert_to_memory(self, observation):
-        if self.current_capacity % self.max_capacity == 0 and self.current_capacity > 0:
-            print("Memory is full - indexing from 0")
+        # if self.current_capacity % self.max_capacity == 0 and self.current_capacity > 0:
+        #     print("Memory is full - indexing from 0")
         current_index = self.current_capacity%self.max_capacity
 
         self.state_memory[current_index] = observation[0]
@@ -34,7 +34,7 @@ class Memory:
     """ Sample batch_size of samples from memory """
     def sample_from_memory(self):
         record_range = min(self.current_capacity, self.max_capacity)
-        batch_indices = np.random.choice(record_range, self.batch_size)
+        batch_indices = np.random.choice(record_range, self.batch_size, replace=True)
 
         state_batch = self.state_memory[batch_indices]
         action_batch = self.action_memory[batch_indices]

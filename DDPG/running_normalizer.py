@@ -25,3 +25,9 @@ class RunningNormalizer:
     """ Method handling input data normalization """
     def normalize(self, x):
         return (x - self.mean) / (np.sqrt(self.variance()) + self.epsilon)
+
+    def adjust_settings(self, normalizer_settings):
+        self.mean = normalizer_settings[0]
+        self.M2 = normalizer_settings[1]
+        self.count = normalizer_settings[2]
+        self.epsilon = normalizer_settings[3]
