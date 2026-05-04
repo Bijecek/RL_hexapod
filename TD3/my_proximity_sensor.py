@@ -1,12 +1,14 @@
 import numpy as np
 from pyrep.objects import ProximitySensor
-from pyrep.objects.object import Object
-from pyrep.const import ObjectType
 from math import sqrt
 from pyrep.backend import sim
 
 class MyProximitySensor(ProximitySensor):
     def read(self):
+        """
+        Wrapper for sim.simReadProximitySensor() method which adds distance calculation
+        :return: Boolean flag of measurement, distance, np.array(point), np.array(normal)
+        """
         state, _, point, normal = sim.simReadProximitySensor(self._handle)
 
         if state:
