@@ -1,0 +1,61 @@
+Learning rate actor: 0.0001
+Learning rate critic: 0.001
+Gamma: 0.99
+Tau: 0.005
+Memory capacity: 50000
+Batch size: 256
+Actor architecture: Model: "sequential_1"
+_________________________________________________________________
+ Layer (type)                Output Shape              Param #   
+=================================================================
+ dense_3 (Dense)             (None, 256)               15360     
+                                                                 
+ layer_normalization_1 (Lay  (None, 256)               512       
+ erNormalization)                                                
+                                                                 
+ activation_2 (Activation)   (None, 256)               0         
+                                                                 
+ dense_4 (Dense)             (None, 256)               65792     
+                                                                 
+ activation_3 (Activation)   (None, 256)               0         
+                                                                 
+ dense_5 (Dense)             (None, 256)               65792     
+                                                                 
+ activation_4 (Activation)   (None, 256)               0         
+                                                                 
+ dense_6 (Dense)             (None, 18)                4626      
+                                                                 
+ lambda_1 (Lambda)           (None, 18)                0         
+                                                                 
+=================================================================
+Total params: 152082 (594.07 KB)
+Trainable params: 152082 (594.07 KB)
+Non-trainable params: 0 (0.00 Byte)
+_________________________________________________________________
+
+Critic architecture: Model: "model"
+__________________________________________________________________________________________________
+ Layer (type)                Output Shape                 Param #   Connected to                  
+==================================================================================================
+ input_3 (InputLayer)        [(None, 59)]                 0         []                            
+                                                                                                  
+ input_4 (InputLayer)        [(None, 18)]                 0         []                            
+                                                                                                  
+ dense_7 (Dense)             (None, 256)                  15360     ['input_3[0][0]']             
+                                                                                                  
+ dense_8 (Dense)             (None, 128)                  2432      ['input_4[0][0]']             
+                                                                                                  
+ concatenate (Concatenate)   (None, 384)                  0         ['dense_7[0][0]',             
+                                                                     'dense_8[0][0]']             
+                                                                                                  
+ dense_9 (Dense)             (None, 256)                  98560     ['concatenate[0][0]']         
+                                                                                                  
+ dense_10 (Dense)            (None, 256)                  65792     ['dense_9[0][0]']             
+                                                                                                  
+ dense_11 (Dense)            (None, 1)                    257       ['dense_10[0][0]']            
+                                                                                                  
+==================================================================================================
+Total params: 182401 (712.50 KB)
+Trainable params: 182401 (712.50 KB)
+Non-trainable params: 0 (0.00 Byte)
+__________________________________________________________________________________________________
