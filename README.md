@@ -12,3 +12,8 @@ python3 main.py RESULTS_DIRECTORY_NAME Train EXPERIMENT_NUMBER
 
 Test:
 python3 main.py DATA_DIRECTORY_NAME Test EXPERIMENT_NUMBER
+
+
+Progress of two learning experiments is shown in videos below.
+https://www.youtube.com/watch?v=NQEzutHGWCs
+https://youtu.be/sjKv9VdxIOQ
